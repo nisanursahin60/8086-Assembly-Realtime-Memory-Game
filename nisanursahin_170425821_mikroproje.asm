@@ -1,22 +1,26 @@
 .MODEL SMALL
 .STACK 100H
 
-.DATA
+.DATA 
+    ; 4x4 tahta icin 16 kartin gizli degerleri 
     gizli_kartlar DB 'A', 'B', 'C', 'D'
                   DB 'E', 'F', 'G', 'H'
                   DB 'D', 'C', 'B', 'A'
-                  DB 'H', 'G', 'F', 'E'
-
+                  DB 'H', 'G', 'F', 'E' 
+                  
+    ; Ekranda gosterilen kart durumu: '*' = kapali, harf = acik
     acik_kartlar  DB 16 DUP('*')
 
     hamle_sayisi  DB 10
     kalan_sure    DB 60
     eslesen_cift  DB 0
+    
+    ; Secilen kartlarin tahta indeksleri (0-15 arasi)
     idx1          DB ?
     idx2          DB ?
 
-    ; TIMER ICIN DEGISKENLER
-    ; Gercek zamanli sayacç icin isletim sisteminden aldigimiz saniye verisini burada tutuyoruz
+    ; INT 21H , AH=2CH ile okunan sistem saatinin saniye degeri burada tutulur.
+    ; Her saniye degisiminde kalan_sure bir azaltilir.
     son_saniye    DB ?
     imlec_satir   DB ?
     imlec_sutun   DB ?
@@ -24,14 +28,16 @@
     msg_baslik    DB 10, 13, '============ BELLEK OYUNU =============$'
     msg_stats     DB 10, 13, 'KALAN HAMLE: $'
     msg_time      DB '  |  KALAN SURE: $'
-    msg_secim1    DB 10, 13, '1. Kart (0-F): $'
-    msg_secim2    DB 10, 13, '2. Kart (0-F): $'
-    msg_hata      DB 10, 13, 'Gecersiz! $'
-    msg_yanlis    DB 10, 13, 'ESLESMEDI! (-5 Saniye)$'
-    msg_dogru     DB 10, 13, 'TEBRIKLER! ESLESTI.$'
-    msg_kazandin  DB 10, 13, 'TEBRIKLER! KAZANDINIZ.$'
-    msg_kaybettin DB 10, 13, 'KAYBETTIN! YENIDEN DENE.$'
-    msg_devam     DB 10, 13, 'Devam etmek icin bir tusa bas...$' 
+    msg_secim1    DB '1. Kart (0-F): $'
+    msg_secim2    DB '2. Kart (0-F): $'
+    msg_hata      DB 'Gecersiz! $'
+    msg_yanlis    DB 'ESLESMEDI! (-5 Saniye)$'
+    msg_dogru     DB 'TEBRIKLER! ESLESTI.$'
+    msg_kazandin  DB 'TEBRIKLER! KAZANDINIZ.$'
+    msg_kaybettin DB 'KAYBETTIN! YENIDEN DENE.$'
+    msg_devam     DB 'Devam etmek icin bir tusa bas...$'
+    msg_tekrar    DB 'Tekrar oynamak icin E, cikmak icin baska tusa basin...$'
+     
     ; --- BASLANGIC EKRANI METINLERI ---
     logo1 DB 10,10,10,10,10, '                   ',219,'    ',219,'   ',219,'',219,'   ',219,'',219,'',219,'',219,'',219,'',219,'  ',219,'  ',219,'',219,'',219,'',219,'',219,'',219,'   ',219,'',219,'   $'
     logo2 DB 10,13,          '                   ',219,'    ',219,'  ',219,'  ',219,'  ',219,'       ',219,'      ',219,'   ',219,'  ',219,'  $'
@@ -56,9 +62,26 @@ MAIN PROC
     INT 21H
     MOV son_saniye, DH
     
+    CALL EKRANI_TEMIZLE
+
+    LEA DX, msg_baslik        ; Baslik bir kez yazilir
+    MOV BL, 0BH
+    CALL PRINT_STR_RENKLI
+
+    LEA DX, msg_stats         ; "KALAN HAMLE:" etiketi 
+    MOV BL, 07H
+    CALL PRINT_STR_RENKLI
+
+    LEA DX, msg_time          ; "KALAN SURE:" etiketi 
+    MOV BL, 07H
+    CALL PRINT_STR_RENKLI
+
+    CALL TAHTAYI_YAZDIR       ; Tahta bir kez cizilir
+    
                           
 ANA_DONGU: 
-;Her dongu basinda oyunun bitip bitmedigini kontrol ediyoruz
+
+    ; Kazanma kaybetme kontrolu 8 cift eslesti mi, sure bitti mi?
     CMP eslesen_cift, 8
     JE KAZANDIN
     CMP hamle_sayisi, 0
@@ -66,91 +89,78 @@ ANA_DONGU:
     CMP kalan_sure, 0
     JLE KAYBETTIN
 
-    CALL EKRANI_TEMIZLE
-    
-    ; Baslik (Camgobegi)
-    LEA DX, msg_baslik
-    MOV BL, 0BH 
-    CALL PRINT_STR_RENKLI
-    
-    ; Istatistikler
-    LEA DX, msg_stats
-    MOV BL, 07H 
-    CALL PRINT_STR_RENKLI
-    MOV AL, hamle_sayisi
-    MOV BL, 0AH 
-    CALL SAYI_YAZDIR
-    
-    ; Zamanlayici
-    ; Sure 10 saniyenin altina dustugunde oyuncuyu uyarmak icin rengi saridan kirmiziya (0CH) ceviriyoruz.
-    LEA DX, msg_time
-    MOV BL, 07H 
-    CALL PRINT_STR_RENKLI
-    MOV AL, kalan_sure
-    MOV BL, 0EH      ; Sari
-    CMP AL, 10
-    JAE SURE_RENGI_TAMAM
-    MOV BL, 0CH      ; 10 Saniyenin altinda Kirmizi
-SURE_RENGI_TAMAM:
-    CALL SAYI_YAZDIR
-    
-   
-    CALL TAHTAYI_YAZDIR
+    CALL STATS_GUNCELLE        ; Sadece sayilari guncelle
+    CALL TAHTAYI_YAZDIR        ; Tahtayi ustune yaz
+    CALL MESAJ_ALANI_TEMIZLE   ; Alt mesaj satirini temizle
 
-    ;1. KART SECIMI
+;1. KART SECIMI
 SEC1:
+    MOV AH, 02H        ; cursor'i satir 11'e gotur
+    MOV BH, 0
+    MOV DH, 11
+    MOV DL, 0
+    INT 10H
     LEA DX, msg_secim1
     MOV BL, 0EH 
     CALL PRINT_STR_RENKLI
-    CALL KARAKTER_OKU
-    CALL INDEKSE_CEVIR
-    CMP AH, 1
+    
+    
+    CALL KARAKTER_OKU    ; Klavyeden karakter oku
+    CALL INDEKSE_CEVIR   ; '0'-'9' veya 'A'-'F' girisi 0-15 indeksine cevir
+    CMP AH, 1            ; AH=1 ise gecersiz giris
     JE SEC1_HATA 
     
-    
-    ;Secilen kartin daha once acilip acilmadigina maske dizisinden ('*') kontrol ediyoruz
+    ; Secilen kartin kapali olup olmadigini kontrol et 
     MOV BL, AL
     MOV BH, 0
     CMP acik_kartlar[BX], '*'
     JNE SEC1_HATA
     
+    ; Karti ac: indeksi kaydet, gizli degeri acik_kartlar dizisine yaz
     MOV idx1, AL
     MOV SI, BX
     MOV AL, gizli_kartlar[SI]
     MOV acik_kartlar[SI], AL
     
-    CALL EKRANI_TEMIZLE
-    CALL TAHTAYI_YAZDIR
+    CALL TAHTAYI_YAZDIR     ; Aciilan karti tahtada goster
 
-    ; 2. KART SECIMI
 SEC2:
+    MOV AH, 02H        ; cursor'i satir 11'e gotur
+    MOV BH, 0
+    MOV DH, 11
+    MOV DL, 0
+    INT 10H
     LEA DX, msg_secim2
     MOV BL, 0EH 
     CALL PRINT_STR_RENKLI
     CALL KARAKTER_OKU
     CALL INDEKSE_CEVIR
     CMP AH, 1
-    JE SEC2_HATA
+    JE SEC2_HATA 
+    
+    ; Ayni karti iki kez secmeyi engelle
     CMP AL, idx1
     JE SEC2_HATA
     
+    ; Secilen kartin kapali olup olmadigini kontrol et
     MOV BL, AL
     MOV BH, 0
     CMP acik_kartlar[BX], '*'
     JNE SEC2_HATA
     
+    ; Karti ac
     MOV idx2, AL
     MOV DI, BX
     MOV AL, gizli_kartlar[DI]
     MOV acik_kartlar[DI], AL
     
-    CALL EKRANI_TEMIZLE
-    CALL TAHTAYI_YAZDIR
+    CALL TAHTAYI_YAZDIR  ; Ikinci acilan karti tahtada goster
+    
+    ; ---- ESLESME KONTROLU ----
 
-    ; --- KARSILASTIRMA --- 
-    ; Secilen iki indeksteki (SI ve DI) degerleri karsilastriyoruz.
-    DEC hamle_sayisi 
-
+    DEC hamle_sayisi     ; Her iki kart secildiginde 1 hamle harcan
+    
+    ; SI ve DI ile iki kartin gizli degerlerini karsilastir
     MOV BL, idx1
     MOV BH, 0
     MOV SI, BX
@@ -158,21 +168,27 @@ SEC2:
     MOV BL, idx2
     MOV BH, 0
     MOV DI, BX
-
     MOV AL, gizli_kartlar[SI]
     MOV AH, gizli_kartlar[DI]
     
     CMP AL, AH
-    JE ESLESME_TAMAM
+    JE ESLESME_TAMAM   ; Degerler esitse eslesme basarili
     
-    
-    ;Eslesme basarisizsa ceza olarak sureden 5 saniye dusuuryoruz
+    ; ---- ESLESME BASARISIZ ----
+    MOV AH, 02H        
+    MOV BH, 0
+    MOV DH, 11
+    MOV DL, 0
+    INT 10H
     LEA DX, msg_yanlis
-    MOV BL, 0CH ; Kirmizi
-    CALL PRINT_STR_RENKLI
-    MOV acik_kartlar[SI], '*'
-    MOV acik_kartlar[DI], '*'
+    MOV BL, 0CH
+    CALL PRINT_STR_RENKLI 
     
+    ; Kartlari tekrar kapat 
+    MOV acik_kartlar[SI], '*'
+    MOV acik_kartlar[DI], '*' 
+    
+    ; Ceza: Sureden 5 saniye dus (sure 5'ten az ise sifirla)
     CMP kalan_sure, 5
     JB SURE_SIFIRLA
     SUB kalan_sure, 5
@@ -181,59 +197,152 @@ SEC2:
 SURE_SIFIRLA:
     MOV kalan_sure, 0
     JMP BEKLE_VE_DEVAM
-
+    
+    
+; ---- ESLESME BASARILI ----
 ESLESME_TAMAM:
-    INC eslesen_cift
+    INC eslesen_cift ; Bulunan cift sayisini artir
+    
+    MOV AH, 02H        ; cursor'i satir 11'e gotur
+    MOV BH, 0
+    MOV DH, 11
+    MOV DL, 0
+    INT 10H
     LEA DX, msg_dogru
-    MOV BL, 0AH ; Yesil
-    CALL PRINT_STR_RENKLI
-
+    MOV BL, 0AH
+    CALL PRINT_STR_RENKLI 
+    
+; ---- HAMLE SONU: TUS BEKLE ----    
 BEKLE_VE_DEVAM:
+    MOV AH, 02H        
+    MOV BH, 0
+    MOV DH, 12
+    MOV DL, 0
+    INT 10H
     LEA DX, msg_devam
-    MOV BL, 0FH ; Beyaz
+    MOV BL, 0FH
     CALL PRINT_STR_RENKLI
+    
+    ;Herhangi bir tusa basilana kadar bekle (INT 21H / AH=07H)
     MOV AH, 07H
     INT 21H
     JMP ANA_DONGU
 
 SEC1_HATA:
+    MOV AH, 02H        
+    MOV BH, 0
+    MOV DH, 11
+    MOV DL, 0
+    INT 10H
     LEA DX, msg_hata
     MOV BL, 0CH 
     CALL PRINT_STR_RENKLI
     JMP SEC1
+
 SEC2_HATA:
+    MOV AH, 02H        
+    MOV BH, 0
+    MOV DH, 11
+    MOV DL, 0
+    INT 10H
     LEA DX, msg_hata
     MOV BL, 0CH 
     CALL PRINT_STR_RENKLI
     JMP SEC2
 
 KAZANDIN:
+    MOV AH, 02H
+    MOV BH, 0
+    MOV DH, 11
+    MOV DL, 0
+    INT 10H
     LEA DX, msg_kazandin
     MOV BL, 0AH 
     CALL PRINT_STR_RENKLI
-    JMP CIKIS
+    JMP OYUN_SONU
 KAYBETTIN:
+    MOV AH, 02H
+    MOV BH, 0
+    MOV DH, 11
+    MOV DL, 0
+    INT 10H
     LEA DX, msg_kaybettin
     MOV BL, 0CH 
     CALL PRINT_STR_RENKLI
 
+OYUN_SONU:
+    MOV AH, 02H
+    MOV BH, 0
+    MOV DH, 12
+    MOV DL, 0
+    INT 10H
+    LEA DX, msg_tekrar    ; Oyuncuya tekrar oynama secenegi sun
+    MOV BL, 0EH
+    CALL PRINT_STR_RENKLI 
+    
+    ; INT 16H / AH=00H ile tus beklenir, AL'ye karakter gelir
+    MOV AH, 00H
+    INT 16H              ; Tusa basilmasini bekle
+    
+    CMP AL, 'e'          ; 'e' ye basildi mi
+    JE YENIDEN_BASLAT
+    CMP AL, 'E'
+    JE YENIDEN_BASLAT
+    JMP CIKIS            ; Baska tus = cikis
+
+YENIDEN_BASLAT:
+    ; Degiskenleri sifirla
+    MOV hamle_sayisi, 10
+    MOV kalan_sure, 60
+    MOV eslesen_cift, 0
+    
+    ; Tum kartlari kapat
+    MOV CX, 16
+    MOV SI, 0
+KAPAT_DONGU:
+    MOV acik_kartlar[SI], '*'
+    INC SI
+    LOOP KAPAT_DONGU
+    
+    ; Zamanlayiciyi sifirla
+    MOV AH, 2CH
+    INT 21H
+    MOV son_saniye, DH
+    
+    ; Ekrani yeniden hazirla
+    CALL EKRANI_TEMIZLE
+    LEA DX, msg_baslik
+    MOV BL, 0BH
+    CALL PRINT_STR_RENKLI
+    LEA DX, msg_stats
+    MOV BL, 07H
+    CALL PRINT_STR_RENKLI
+    LEA DX, msg_time
+    MOV BL, 07H
+    CALL PRINT_STR_RENKLI
+    CALL TAHTAYI_YAZDIR
+    JMP ANA_DONGU
+
 CIKIS:
     MOV AH, 4CH
     INT 21H
-MAIN ENDP
+MAIN ENDP 
 
-; YARDIMCI FONKSIYONLAR
 
-; TEKLI KARAKTER YAZDIRMA 
+; YARDIMCI FONKSIYONLAR 
+
+; Tek bir karakteri BIOS'un INT 10H / AH=09H fonksiyonu ile
+; BL registerindaki renkte ekrana yazar, ardindan cursoru bir sag kaydirir
+; Girdi : AL = karakter, BL = renk kodu
 RENKLI_YAZ PROC
     PUSH AX
     PUSH BX
     PUSH CX
     PUSH DX
     
-    MOV AH, 09H
-    MOV BH, 0     
-    MOV CX, 1
+    MOV AH, 09H       ; Karakter + renk yaz
+    MOV BH, 0          ; Sayfa 0
+    MOV CX, 1         ; 1 kez yazar
     INT 10H
     
    
@@ -257,6 +366,8 @@ IMLEC_KAYDIR:
     RET
 RENKLI_YAZ ENDP
 
+
+;'$' ile biten bir string'i BL rengiyle ekrana yazar.
 PRINT_STR_RENKLI PROC
     PUSH AX
     PUSH BX
@@ -316,8 +427,10 @@ STR_BITIR:
     POP BX
     POP AX
     RET
-PRINT_STR_RENKLI ENDP
+PRINT_STR_RENKLI ENDP 
 
+
+; AL registerindaki 0-99 araligindaki sayiyi iki basamakli olarak ekrana yazar 
 SAYI_YAZDIR PROC
     PUSH AX
     PUSH BX
@@ -346,54 +459,51 @@ SAYI_YAZDIR ENDP
 
 
 TAHTAYI_YAZDIR PROC
-    PUSH CX
+    PUSH AX
     PUSH BX
+    PUSH CX
     PUSH DX
-    PUSH DI       ; 
-    MOV CX, 16
-    MOV SI, 0
-    MOV DI, 0     
-    
-    MOV DL, 10
-    MOV AH, 02H
-    INT 21H
-    MOV DL, 13
-    INT 21H
+    PUSH SI
+    PUSH DI
 
-YAZ_DONGU:
+    MOV SI, 0
+    MOV DI, 0        
+    
+TAHTA_SATIR_HESAPLA:
+    MOV AX, SI        
+    MOV BL, 4
+    DIV BL            
+    
+    ADD AL, 4         
+    MOV DH, AL
+    MOV AL, AH
+    SHL AL, 1         
+    MOV DL, AL
+    
+    MOV AH, 02H
+    MOV BH, 0
+    INT 10H          
+    
     MOV AL, acik_kartlar[SI]
     CMP AL, '*'
-    JE KAPALI_KART
-    MOV BL, 0AH   ; Yesil
-    JMP KART_YAZ
-KAPALI_KART:
-    MOV BL, 79H   ; Acik Mavi
-KART_YAZ:
-    CALL RENKLI_YAZ
-    
-    MOV AL, ' '
-    MOV BL, 07H
+    JE KAPALI_K
+    MOV BL, 0AH
+    JMP YAZ_K
+KAPALI_K:
+    MOV BL, 79H
+YAZ_K:
     CALL RENKLI_YAZ
     
     INC SI
-    INC DI        ; Satirda kac kart bastigimizi sayiyoruz
-    CMP DI, 4     
-    JNE ATLA
-    
-    ; Eger 4 karta ulasildiysa alti satira gec
-    MOV DL, 10 
-    MOV AH, 02H
-    INT 21H
-    MOV DL, 13
-    INT 21H
-    MOV DI, 0     ; Sayaci sifirla
-ATLA:
-    LOOP YAZ_DONGU
-    
+    CMP SI, 16
+    JNE TAHTA_SATIR_HESAPLA
+
     POP DI
+    POP SI
     POP DX
-    POP BX
     POP CX
+    POP BX
+    POP AX
     RET
 TAHTAYI_YAZDIR ENDP
 
@@ -427,18 +537,16 @@ BASLANGIC_EKRANI PROC
     MOV BL, 0BH
     CALL PRINT_STR_RENKLI
 
-    ; KARTI OYUNU alt basligini Beyaz (0FH) ile bas
+
     LEA DX, msg_karti
     MOV BL, 0FH
     CALL PRINT_STR_RENKLI
 
-    ; Gelistiren kismini Koyu Gri (08H) veya Sari (0EH) ile bas
+    ; Gelistiren kismini 
     LEA DX, msg_isim
     MOV BL, 08H
     CALL PRINT_STR_RENKLI
 
-    ; Tus bekleme yazisini Yanip Sonen Sari (8EH) ile bas
-    ; (8 bitlik renk kodunda en bastaki biti 1 yapmak yaziyi yanip sondurur)
     LEA DX, msg_press_key
     MOV BL, 8EH
     CALL PRINT_STR_RENKLI
@@ -453,17 +561,23 @@ BASLANGIC_EKRANI PROC
     RET
 BASLANGIC_EKRANI ENDP
 
+
+; Klavyeden bir karakter okur. Tus bekleme sirasinda her saniye INT 21H / AH=2CH ile sistem saatini kontrol eder; saniye
+; degistiyse kalan_sure'yi bir azaltir ve ekrandaki sure sayisini
+; gunceller. Sure sifira ulasirsa KAYBETTIN etiketine atlar.
 KARAKTER_OKU PROC
 BEKLE_TUS:
     MOV AH, 01H
     INT 16H
-    JNZ TUS_AL  
-
+    JNZ TUS_AL
+      
+    ;Tus yokken sistem saatini oku
     MOV AH, 2CH
     INT 21H
     CMP DH, son_saniye
     JE BEKLE_TUS 
-
+    
+    ;Saniye degisir zamanlayiciyi guncelle
     MOV son_saniye, DH
     CMP kalan_sure, 0
     JLE ZAMAN_DOLDU
@@ -478,7 +592,7 @@ BEKLE_TUS:
     MOV AH, 02H
     MOV BH, 0
     MOV DH, 2
-    MOV DL, 32
+    MOV DL, 29
     INT 10H
 
     MOV AL, kalan_sure
@@ -514,6 +628,83 @@ TUS_AL:
     RET
 KARAKTER_OKU ENDP
 
+STATS_GUNCELLE PROC
+    PUSH AX
+    PUSH BX
+    PUSH DX
+    
+    ;HAMLE SAYISINI GUNCELLE
+    MOV AH, 02H
+    MOV BH, 0
+    MOV DH, 2        
+    MOV DL, 14        
+    INT 10H
+    
+    MOV AL, hamle_sayisi
+    MOV BL, 0AH
+    CALL SAYI_YAZDIR
+    
+    ;KALAN SUREYI GUNCELLE
+    MOV AH, 02H
+    MOV BH, 0
+    MOV DH, 2
+    MOV DL, 29       
+    INT 10H
+    
+    MOV AL, kalan_sure
+    MOV BL, 0EH
+    CMP AL, 10
+    JAE SURE_OK
+    MOV BL, 0CH
+SURE_OK:
+    CALL SAYI_YAZDIR
+    
+    POP DX
+    POP BX
+    POP AX
+    RET
+STATS_GUNCELLE ENDP
+
+MESAJ_ALANI_TEMIZLE PROC
+    PUSH AX
+    PUSH BX
+    PUSH CX
+    PUSH DX
+    
+    ; Satir 10'dan 15'e kadar boslukla doldur
+    MOV DH, 10
+SATIR_DONGU:
+    MOV DL, 0
+    MOV AH, 02H
+    MOV BH, 0
+    INT 10H          
+    
+    MOV CX, 80       
+    MOV AL, ' '
+    MOV BL, 07H
+    MOV AH, 09H
+    INT 10H
+    
+    INC DH
+    CMP DH, 16
+    JL SATIR_DONGU
+    
+    ; Cursori mesaj alanina birakir
+    MOV AH, 02H
+    MOV BH, 0
+    MOV DH, 10
+    MOV DL, 0
+    INT 10H
+    
+    POP DX
+    POP CX
+    POP BX
+    POP AX
+    RET
+MESAJ_ALANI_TEMIZLE ENDP 
+
+
+;Klavyeden okunan hex karakterini0-15 araliginda bir indekse donusturur
 INDEKSE_CEVIR PROC
     MOV AH, 0
     CMP AL, '0'
